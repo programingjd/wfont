@@ -11,7 +11,7 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn subset() {
+pub unsafe extern "C" fn subset() -> Box<[u8; 8]> {
     let bytes = include_bytes!("../barlow.woff2");
     let font = FontRef::new(bytes)
         .inspect_err(|err| log_err(&format!("{err}")))
@@ -68,8 +68,14 @@ pub unsafe extern "C" fn subset() {
     );
     let output = subset_font(&font, &plan)
         .inspect_err(|err| log_err(&format!("{err}")))
-        .unwrap();
-    todo!()
+        .unwrap()
+        .into_boxed_slice();
+    let len = output.len();
+    let ptr = Box::into_raw(output) as *mut u8;
+    let mut ptr_and_len = Vec::with_capacity(8);
+    ptr_and_len.extend_from_slice(&(ptr as u32).to_le_bytes());
+    ptr_and_len.extend_from_slice(&(len as u32).to_le_bytes());
+    unsafe { Box::from_raw(Box::into_raw(ptr_and_len.into_boxed_slice()) as *mut [u8; 8]) }
 }
 
 fn log_err(message: &str) {
