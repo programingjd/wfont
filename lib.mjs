@@ -3,7 +3,7 @@ const url=new URL('lib.wasm',import.meta.url);
 await (await fetch(url)).arrayBuffer();
 const isWorker=!!globalThis.WorkerGlobalScope&&globalThis instanceof WorkerGlobalScope;
 if(isWorker){
-  const [hash,n]=globalThis.name.split('-');
+  const hash=globalThis.name;
   let wasm;
   const {instance}=await WebAssembly.instantiateStreaming(fetch(url,{cache:'force-cache'}),{
     js:{
@@ -14,27 +14,45 @@ if(isWorker){
   wasm=instance.exports;
   onmessage=async({data})=>{
     if(typeof data==='object'){
-      const {hash:h,input}=data;
+      const {hash:h,input,text,ttf}=data;
       if(h===hash&&input instanceof Uint8Array){
-        const ptrAndLenPtr=wasm.subset();
-        const [ptr,len]=new Uint32Array(wasm.memory.buffer,ptrAndLenPtr,2);
-        const output=new Uint8Array(wasm.memory.buffer,ptr,len);
-        postMessage({hash,output});
+        if(text instanceof Uint8Array){
+          const len1=input.length;
+          const ptr1=wasm.alloc(len1);
+          const len2=text.length;
+          const ptr2=wasm.alloc(len2);
+          new Uint8Array(wasm.memory.buffer,ptr1,len1).set(input);
+          new Uint8Array(wasm.memory.buffer,ptr2,len2).set(text);
+          const ptrAndLenPtr=wasm.subset(ptr1,len1,ptr2,len2,!ttf);
+          const [ptr3,len3]=new Uint32Array(wasm.memory.buffer,ptrAndLenPtr,2);
+          const output=new Uint8Array(wasm.memory.buffer,ptr3,len3);
+          postMessage({hash,output});
+        }else{
+          const len1=input.length;
+          const ptr1=wasm.alloc(len1);
+          new Uint8Array(wasm.memory.buffer,ptr1,len1).set(input);
+          const ptrAndLenPtr=wasm.metadata(ptr1,len1);
+          const [ptr2,len2]=new Uint32Array(wasm.memory.buffer,ptrAndLenPtr,2);
+          const metadata=new Uint8Array(wasm.memory.buffer,ptr2,len2);
+          postMessage({hash,metadata,input},[input.buffer]);
+        }
       }
     }
   };
   postMessage({hash,ready:true});
 }
 /**
+ * @param {Uint8Array} input
+ * @param {string} text
+ * @param {boolean} woff2
  * @param {?AbortSignal} signal
  * @return {Promise<Uint8Array>}
  */
-const subset=async(signal)=>{
-  const input=new Uint8Array(0);
+const subset=async(input,text,woff2,signal)=>{
   const random=crypto.getRandomValues(new Uint8Array(16));
   const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',random)).toHex();
   const worker=await new Promise((resolve,reject)=>{
-    const worker=new Worker(import.meta.url,{type:'module',credentials:'omit',name:`${hash}-0`});
+    const worker=new Worker(import.meta.url,{type:'module',credentials:'omit',name:hash});
     worker.onerror=_=>reject();
     worker.onmessage=({data})=>{
       if(typeof data==='object'){
@@ -64,8 +82,52 @@ const subset=async(signal)=>{
         }
       }
     };
-    worker.postMessage({hash,input});
+    const encoded=new TextEncoder().encode(text);
+    worker.postMessage({hash,input,text:encoded,ttf:!woff2},[input.buffer,encoded.buffer]);
   });
 };
-export {subset};
-export default subset;
+/**
+ * @param {Uint8Array} input
+ * @param {?AbortSignal} signal
+ * @return {Promise<{input:Uint8Array,family_name:string,axes:{name:string,min:number,max:number,default:number}[]}>}
+ */
+const metadata=async(input,signal)=>{
+  const random=crypto.getRandomValues(new Uint8Array(16));
+  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',random)).toHex();
+  const worker=await new Promise((resolve,reject)=>{
+    const worker=new Worker(import.meta.url,{type:'module',credentials:'omit',name:hash});
+    worker.onerror=_=>reject();
+    worker.onmessage=({data})=>{
+      if(typeof data==='object'){
+        const {hash:h,ready}=data;
+        if(h===hash&&ready){
+          worker.onmessage=null;
+          resolve(worker);
+        }
+      }
+      resolve(data);
+    }
+  });
+  if(signal) signal.throwIfAborted();
+  return await new Promise((resolve,reject)=>{
+    if(signal?.aborted) return reject();
+    worker.onerror=_=>{
+      worker.terminate();
+      reject();
+    };
+    if(signal) signal.addEventListener('abort',worker.onerror);
+    worker.onmessage=({data})=>{
+      if(typeof data==='object'){
+        const {hash:h,metadata,input}=data;
+        if(h===hash&&metadata&&input){
+          worker.terminate();
+          const result=JSON.parse(new TextDecoder().decode(metadata));
+          result.input=input;
+          resolve(result);
+        }
+      }
+    };
+    worker.postMessage({hash,input},[input.buffer]);
+  });
+};
+export {subset,metadata};
