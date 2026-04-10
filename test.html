@@ -59,7 +59,7 @@ const open=async(data)=>{
   const blob=new Blob([output],{type: woff2?'font/woff2':'font/truetype'});
   link.href=URL.createObjectURL(blob);
   link.download=`subset.${woff2?'woff2':'ttf'}`;
-  link.textContent=`Proof generated (${output.length}b)`;
+  link.textContent=`${woff2?'WOFF2':'Truetype'} font generated (${output.length}b)`;
   return output;
 };
 await fetch(font).then(it=>it.blob()).then(open);
