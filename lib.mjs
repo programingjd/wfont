@@ -87,9 +87,18 @@ const subset=async(input,text,woff2,signal)=>{
   });
 };
 /**
+ * @typedef {Record<string,any>} Metadata
+ * @property {Uint8Array} input
+ * @property {string} family_name
+ * @property {number} codepoint_count
+ * @property {{tag:string,name:string}[]} features
+ * @property {{tag:string,min:number,max:number,default:number}[]} axes
+ * @property {{name:string,start:number,end:number,codepoints:number[]}[]} tables
+ */
+/**
  * @param {Uint8Array} input
  * @param {?AbortSignal} signal
- * @return {Promise<{input:Uint8Array,family_name:string,axes:{name:string,min:number,max:number,default:number}[]}>}
+ * @return {Promise<Metadata>}
  */
 const metadata=async(input,signal)=>{
   const random=crypto.getRandomValues(new Uint8Array(16));
@@ -121,7 +130,8 @@ const metadata=async(input,signal)=>{
         const {hash:h,metadata,input}=data;
         if(h===hash&&metadata&&input){
           worker.terminate();
-          const result=JSON.parse(new TextDecoder().decode(metadata));
+          const json=new TextDecoder().decode(metadata);
+          const result=JSON.parse(json);
           result.input=input;
           resolve(result);
         }

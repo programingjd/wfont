@@ -1,8 +1,14 @@
+mod unicode;
+
+use crate::unicode::{block_index, Block};
 use skera::*;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::str::from_utf8;
 use ttf2woff2::BrotliQuality;
 use write_fonts::read::collections::IntSet;
+use write_fonts::read::tables::cmap::CmapSubtable;
 use write_fonts::read::tables::{ebdt, eblc, feat, svg};
 use write_fonts::read::{FontRef, TableProvider, TopLevelTable};
 use write_fonts::types::{GlyphId, NameId, Tag};
@@ -24,16 +30,16 @@ pub unsafe extern "C" fn alloc(len: usize) -> *mut u8 {
     ptr
 }
 
-struct JsonString(String);
+struct JsonString<'a>(&'a str);
 
-impl Display for JsonString {
+impl<'a> Display for JsonString<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for c in self.0.chars() {
             match c {
                 '\n' => write!(f, "\\n")?,
                 '\r' => write!(f, "\\r")?,
                 '\t' => write!(f, "\\t")?,
-                c if c <= '\u{001F}' => write!(f, "\\u{:04X}", c as u32)?,
+                c if c <= '\u{001F}' => write!(f, "\\u{{{:08X}}}", c as u32)?,
                 '"' => write!(f, "\\\"")?,
                 '\\' => write!(f, "\\\\")?,
                 _ => write!(f, "{c}")?,
@@ -176,18 +182,18 @@ pub unsafe extern "C" fn metadata(ptr: usize, len: usize) -> Box<[u8; 8]> {
             if let Some(family_name) = family_name {
                 let family_name = family_name
                     .string(name.string_data())
-                    .inspect_err(|err| log_err(&format!("{err}")))
+                    .inspect_err(|err| log_err(&format!("could not read family name: {err}")))
                     .unwrap()
                     .to_string();
                 log_info(&format!("Font family name: {family_name}"));
-                let family_name = JsonString(family_name);
+                let family_name = JsonString(&family_name);
                 metadata.push(format!("\"family_name\":\"{family_name}\""));
             } else {
-                log_err("Font family name not found");
+                log_err("font family name not found");
             }
         }
         Err(err) => {
-            log_err(&format!("Error reading font name: {err}"));
+            log_err(&format!("could not read font name: {err}"));
         }
     }
 
@@ -201,7 +207,7 @@ pub unsafe extern "C" fn metadata(ptr: usize, len: usize) -> Box<[u8; 8]> {
                     let max = axis.max_value.get().to_f32();
                     let default = axis.default_value.get().to_f32();
                     meta.push(format!(
-                        "{{\"name\":\"{tag}\",\"min\":{min},\"max\":{max},\"default\":{default}}}"
+                        "{{\"tag\":\"{tag}\",\"min\":{min},\"max\":{max},\"default\":{default}}}"
                     ));
                 }
                 if !meta.is_empty() {
@@ -209,10 +215,156 @@ pub unsafe extern "C" fn metadata(ptr: usize, len: usize) -> Box<[u8; 8]> {
                 }
             }
             Err(err) => {
-                log_err(&format!("Error reading font axes: {err}"));
+                log_err(&format!("could not read font axes: {err}"));
             }
         }
     }
+
+    let mut feature_set = BTreeSet::new();
+    if let Ok(gsub) = font.gsub() {
+        match gsub.feature_list() {
+            Ok(features) => {
+                for feature in features.feature_records() {
+                    let tag = feature.feature_tag.to_string();
+                    feature_set.insert(tag);
+                }
+            }
+            Err(err) => {
+                log_err(&format!("could not read font gsub features: {err}"));
+            }
+        }
+    }
+    if let Ok(gpos) = font.gpos() {
+        match gpos.feature_list() {
+            Ok(features) => {
+                for feature in features.feature_records() {
+                    let tag = feature.feature_tag.to_string();
+                    feature_set.insert(tag);
+                }
+            }
+            Err(err) => {
+                log_err(&format!("could not read font gpos features: {err}"));
+            }
+        }
+    }
+
+    if !feature_set.is_empty() {
+        let mut meta = vec![];
+        for tag in feature_set.iter() {
+            log_info(tag);
+            let name = match tag.as_str() {
+                it if ("ss01"..="ss20").contains(&it) => {
+                    let raw = 255 + it[2..].parse::<u16>().unwrap();
+                    let id = NameId::new(raw);
+                    match font.name() {
+                        Ok(name) => name.name_record().iter().find_map(|&it| {
+                            if it.name_id() == id {
+                                Some(Cow::Owned(
+                                    it.string(name.string_data())
+                                        .inspect_err(|err| {
+                                            log_err(&format!(
+                                                "could not read stylistic set name: {err}"
+                                            ))
+                                        })
+                                        .unwrap()
+                                        .to_string(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }),
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| feature_name(it))
+                }
+                it if ("cv01"..="cv99").contains(&it) => {
+                    let raw = 285 + it[2..].parse::<u16>().unwrap();
+                    let id = NameId::new(raw);
+                    match font.name() {
+                        Ok(name) => name.name_record().iter().find_map(|&it| {
+                            if it.name_id() == id {
+                                Some(Cow::Owned(
+                                    it.string(name.string_data())
+                                        .inspect_err(|err| {
+                                            log_err(&format!(
+                                                "could not read character variant name: {err}"
+                                            ))
+                                        })
+                                        .unwrap()
+                                        .to_string(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }),
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| feature_name(it))
+                }
+                it => feature_name(it),
+            };
+            let name = JsonString(&name);
+            meta.push(format!("{{\"tag\":\"{tag}\",\"name\":\"{name}\"}}"));
+        }
+        metadata.push(format!("\"features\":[{}]", meta.join(",")));
+    }
+
+    let mut codepoints = BTreeSet::new();
+    if let Ok(cmap) = font.cmap() {
+        for record in cmap.encoding_records() {
+            let subtable = record
+                .subtable(cmap.offset_data())
+                .inspect_err(|err| log_err(&format!("could not read subtable: {err}")))
+                .unwrap();
+            match subtable {
+                CmapSubtable::Format4(table) => {
+                    for (codepoint, _glyph_id) in table.iter() {
+                        if let Some(c) = char::from_u32(codepoint)
+                            && !c.is_control()
+                        {
+                            codepoints.insert(codepoint);
+                        }
+                    }
+                }
+                CmapSubtable::Format12(table) => {
+                    for (codepoint, _glyph_id) in table.iter() {
+                        if let Some(c) = char::from_u32(codepoint)
+                            && !c.is_control()
+                        {
+                            codepoints.insert(codepoint);
+                        }
+                    }
+                }
+                CmapSubtable::Format13(table) => {
+                    for (codepoint, _glyph_id) in table.iter() {
+                        if let Some(c) = char::from_u32(codepoint)
+                            && !c.is_control()
+                        {
+                            codepoints.insert(codepoint);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    metadata.push(format!("\"codepoint_count\":{}", codepoints.len()));
+
+    let mut tables = BTreeMap::new();
+    for codepoint in codepoints {
+        let idx = block_index(codepoint);
+        tables.entry(idx).or_insert_with(Vec::new).push(codepoint);
+    }
+    metadata.push(format!(
+        "\"tables\":[{}]",
+        tables.into_iter().map(|(block_index, codepoints)| {
+            let Block { name, start, end } = Block::at(block_index);
+            let codepoints = codepoints.iter().map(|&it| it.to_string()).collect::<Vec<_>>().join(",");
+            let name = JsonString(&name);
+            format!("{{\"name\":\"{name}\",\"start\":{start},\"end\":{end},\"codepoints\":[{codepoints}]}}")
+        }).collect::<Vec<_>>().join(",")
+    ));
 
     let mut output = Vec::with_capacity(8);
     let metadata = format!("{{{}}}", metadata.join(","))
@@ -233,4 +385,145 @@ fn log_err(message: &str) {
 
 fn log_info(message: &str) {
     unsafe { println(message.as_ptr() as usize, message.len()) };
+}
+
+pub fn feature_name(tag: &str) -> Cow<'static, str> {
+    match tag {
+        "aalt" => Cow::Borrowed("Access All Alternates"),
+        "abvf" => Cow::Borrowed("Above-base Forms"),
+        "abvm" => Cow::Borrowed("Above-base Mark Positioning"),
+        "abvs" => Cow::Borrowed("Above-base Substitutions"),
+        "afrc" => Cow::Borrowed("Alternative Fractions"),
+        "akhn" => Cow::Borrowed("Akhand"),
+        "apkn" => Cow::Borrowed("Kerning for Alternate Proportional Widths"),
+        "blwf" => Cow::Borrowed("Below-base Forms"),
+        "blwm" => Cow::Borrowed("Below-base Mark Positioning"),
+        "blws" => Cow::Borrowed("Below-base Substitutions"),
+        "calt" => Cow::Borrowed("Contextual Alternates"),
+        "case" => Cow::Borrowed("Case-sensitive Forms"),
+        "ccmp" => Cow::Borrowed("Glyph Composition / Decomposition"),
+        "cfar" => Cow::Borrowed("Conjunct Form After Ro"),
+        "chws" => Cow::Borrowed("Contextual Half-width Spacing"),
+        "cjct" => Cow::Borrowed("Conjunct Forms"),
+        "clig" => Cow::Borrowed("Contextual Ligatures"),
+        "cpct" => Cow::Borrowed("Centered CJK Punctuation"),
+        "cpsp" => Cow::Borrowed("Capital Spacing"),
+        "cswh" => Cow::Borrowed("Contextual Swash"),
+        "curs" => Cow::Borrowed("Cursive Positioning"),
+        "c2pc" => Cow::Borrowed("Petite Capitals From Capitals"),
+        "c2sc" => Cow::Borrowed("Small Capitals From Capitals"),
+        "dist" => Cow::Borrowed("Distances"),
+        "dlig" => Cow::Borrowed("Discretionary Ligatures"),
+        "dnom" => Cow::Borrowed("Denominators"),
+        "dtls" => Cow::Borrowed("Dotless Forms"),
+        "expt" => Cow::Borrowed("Expert Forms"),
+        "falt" => Cow::Borrowed("Final Glyph on Line Alternates"),
+        "fin2" => Cow::Borrowed("Terminal Forms #2"),
+        "fin3" => Cow::Borrowed("Terminal Forms #3"),
+        "fina" => Cow::Borrowed("Terminal Forms"),
+        "flac" => Cow::Borrowed("Flattened Accent Forms"),
+        "frac" => Cow::Borrowed("Fractions"),
+        "fwid" => Cow::Borrowed("Full Widths"),
+        "half" => Cow::Borrowed("Half Forms"),
+        "haln" => Cow::Borrowed("Halant Forms"),
+        "halt" => Cow::Borrowed("Alternate Half Widths"),
+        "hist" => Cow::Borrowed("Historical Forms"),
+        "hkna" => Cow::Borrowed("Horizontal Kana Alternates"),
+        "hlig" => Cow::Borrowed("Historical Ligatures"),
+        "hngl" => Cow::Borrowed("Hangul"),
+        "hojo" => Cow::Borrowed("Hojo Kanji Forms (JIS X 0212-1990 Kanji Forms)"),
+        "hwid" => Cow::Borrowed("Half Widths"),
+        "init" => Cow::Borrowed("Initial Forms"),
+        "isol" => Cow::Borrowed("Isolated Forms"),
+        "ital" => Cow::Borrowed("Italics"),
+        "jalt" => Cow::Borrowed("Justification Alternates"),
+        "jp78" => Cow::Borrowed("JIS78 Forms"),
+        "jp83" => Cow::Borrowed("JIS83 Forms"),
+        "jp90" => Cow::Borrowed("JIS90 Forms"),
+        "jp04" => Cow::Borrowed("JIS2004 Forms"),
+        "kern" => Cow::Borrowed("Kerning"),
+        "lfbd" => Cow::Borrowed("Left Bounds"),
+        "liga" => Cow::Borrowed("Standard Ligatures"),
+        "ljmo" => Cow::Borrowed("Leading Jamo Forms"),
+        "lnum" => Cow::Borrowed("Lining Figures"),
+        "locl" => Cow::Borrowed("Localized Forms"),
+        "ltra" => Cow::Borrowed("Left-to-right Alternates"),
+        "ltrm" => Cow::Borrowed("Left-to-right Mirrored Forms"),
+        "mark" => Cow::Borrowed("Mark Positioning"),
+        "med2" => Cow::Borrowed("Medial Forms #2"),
+        "medi" => Cow::Borrowed("Medial Forms"),
+        "mgrk" => Cow::Borrowed("Mathematical Greek"),
+        "mkmk" => Cow::Borrowed("Mark to Mark Positioning"),
+        "mset" => Cow::Borrowed("Mark Positioning via Substitution"),
+        "nalt" => Cow::Borrowed("Alternate Annotation Forms"),
+        "nlck" => Cow::Borrowed("NLC Kanji Forms"),
+        "nukt" => Cow::Borrowed("Nukta Forms"),
+        "numr" => Cow::Borrowed("Numerators"),
+        "onum" => Cow::Borrowed("Oldstyle Figures"),
+        "opbd" => Cow::Borrowed("Optical Bounds"),
+        "ordn" => Cow::Borrowed("Ordinals"),
+        "ornm" => Cow::Borrowed("Ornaments"),
+        "palt" => Cow::Borrowed("Proportional Alternate Widths"),
+        "pcap" => Cow::Borrowed("Petite Capitals"),
+        "pkna" => Cow::Borrowed("Proportional Kana"),
+        "pnum" => Cow::Borrowed("Proportional Figures"),
+        "pref" => Cow::Borrowed("Pre-base Forms"),
+        "pres" => Cow::Borrowed("Pre-base Substitutions"),
+        "pstf" => Cow::Borrowed("Post-base Forms"),
+        "psts" => Cow::Borrowed("Post-base Substitutions"),
+        "pwid" => Cow::Borrowed("Proportional Widths"),
+        "qwid" => Cow::Borrowed("Quarter Widths"),
+        "rand" => Cow::Borrowed("Randomize"),
+        "rclt" => Cow::Borrowed("Required Contextual Alternates"),
+        "rkrf" => Cow::Borrowed("Rakar Forms"),
+        "rlig" => Cow::Borrowed("Required Ligatures"),
+        "rphf" => Cow::Borrowed("Reph Form"),
+        "rtbd" => Cow::Borrowed("Right Bounds"),
+        "rtla" => Cow::Borrowed("Right-to-left Alternates"),
+        "rtlm" => Cow::Borrowed("Right-to-left Mirrored Forms"),
+        "ruby" => Cow::Borrowed("Ruby Notation Forms"),
+        "rvrn" => Cow::Borrowed("Required Variation Alternates"),
+        "salt" => Cow::Borrowed("Stylistic Alternates"),
+        "sinf" => Cow::Borrowed("Scientific Inferiors"),
+        "size" => Cow::Borrowed("Optical size"),
+        "smcp" => Cow::Borrowed("Small Capitals"),
+        "smpl" => Cow::Borrowed("Simplified Forms"),
+        "ssty" => Cow::Borrowed("Math Script-style Alternates"),
+        "stch" => Cow::Borrowed("Stretching Glyph Decomposition"),
+        "subs" => Cow::Borrowed("Subscript"),
+        "sups" => Cow::Borrowed("Superscript"),
+        "swsh" => Cow::Borrowed("Swash"),
+        "titl" => Cow::Borrowed("Titling"),
+        "tjmo" => Cow::Borrowed("Trailing Jamo Forms"),
+        "tnam" => Cow::Borrowed("Traditional Name Forms"),
+        "tnum" => Cow::Borrowed("Tabular Figures"),
+        "trad" => Cow::Borrowed("Traditional Forms"),
+        "twid" => Cow::Borrowed("Third Widths"),
+        "unic" => Cow::Borrowed("Unicase"),
+        "valt" => Cow::Borrowed("Alternate Vertical Metrics"),
+        "vapk" => Cow::Borrowed("Kerning for Alternate Proportional Vertical Metrics"),
+        "vatu" => Cow::Borrowed("Vattu Variants"),
+        "vchw" => Cow::Borrowed("Vertical Contextual Half-width Spacing"),
+        "vert" => Cow::Borrowed("Vertical Alternates"),
+        "vhal" => Cow::Borrowed("Alternate Vertical Half Metrics"),
+        "vjmo" => Cow::Borrowed("Vowel Jamo Forms"),
+        "vkna" => Cow::Borrowed("Vertical Kana Alternates"),
+        "vkrn" => Cow::Borrowed("Vertical Kerning"),
+        "vpal" => Cow::Borrowed("Proportional Alternate Vertical Metrics"),
+        "vrt2" => Cow::Borrowed("Vertical Alternates and Rotation"),
+        "vrtr" => Cow::Borrowed("Vertical Alternates for Rotation"),
+        "zero" => Cow::Borrowed("Slashed Zero"),
+        it if ("cv00"..="cv99").contains(&it) => {
+            let n: u8 = it[2..].parse().unwrap();
+            Cow::Owned(format!("Character Variant {}", n))
+        }
+        it if ("ss01"..="ss20").contains(&it) => {
+            let n: u8 = it[2..].parse().unwrap();
+            Cow::Owned(format!("Stylistic Set {}", n))
+        }
+        it => {
+            log_err(&format!("unexpected feature name: {it}"));
+            panic!("unexpected feature name");
+        }
+    }
 }

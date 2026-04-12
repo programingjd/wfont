@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Test</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html{height:100%;font:3vmin monospace;background:#222;color:#eee}
+body{min-height:100%;padding:1rem;display:grid;place-items:center}
+main{display:flex;flex-direction:column}
+a{color:inherit}
+a:not([href]):after{
+  content:'...';
+  animation:spinner 800ms steps(5) infinite;
+  font-family:monospace;
+}
+@keyframes spinner{
+  0%{content:"..."}
+  20%{content:"\00a0.."}
+  40%{content:"\00a0\00a0."}
+  60%{content:".\00a0\00a0"}
+  80%{content:"..\00a0"}
+}
+</style>
+</head>
+<body>
+<main>
+  <a></a>
+</main>
+</body>
+<script type="module">
+const text='Jerome';
+const font='./recursive.ttf';
+const woff2=true;
+import {subset,metadata} from './lib.mjs';
+
+const link=document.querySelector('main>a');
+let controller=null;
+const open=async(data)=>{
+  controller?.abort();
+  controller=new AbortController();
+  const signal=controller.signal;
+  const input=await new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    signal.onabort=e=>{
+      reader.abort();
+      reject(e);
+    };
+    reader.onload=e=>resolve(new Uint8Array(e.target.result));
+    reader.onerror=e=>reject(e?.target?.error||e);
+    reader.readAsArrayBuffer(data);
+  });
+  if(signal.aborted) return;
+  const meta=await metadata(input,signal);
+  const input2=meta.input;
+  delete meta.input;
+  console.log(JSON.stringify(meta,null,2));
+  const output=await subset(input2,text,woff2,signal);
+  const blob=new Blob([output],{type: woff2?'font/woff2':'font/truetype'});
+  link.href=URL.createObjectURL(blob);
+  link.download=`subset.${woff2?'woff2':'ttf'}`;
+  link.textContent=`${woff2?'WOFF2':'Truetype'} font generated (${output.length}b)`;
+  return output;
+};
+await fetch(font).then(it=>it.blob()).then(open);
+</script>
+</html>
