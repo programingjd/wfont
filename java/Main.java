@@ -66,6 +66,9 @@ void main() throws Exception {
   Files.writeString(Path.of("src/unicode_blocks.rs"), content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
   System.out.println(content);
 
+  final StringBuilder out2 = new StringBuilder();
+  out2.append("pub fn codepoint_name(codepoint: u32) -> Option<&'static str> {\n");
+  out2.append("    match codepoint {\n");
   int count = 0;
   for (int i = 0; i < 0x10FFFF; i++) {
     if (Character.isISOControl(i)) continue;
@@ -77,11 +80,23 @@ void main() throws Exception {
     final String name = Character.getName(i);
     if (name == null) continue;
     if (name.isEmpty()) continue;
-    if (i < 100000) {
-      System.out.println(name);
-    }
+    final String upperHex = String.format("%X", i);
+    if (name.endsWith("-" + upperHex) || name.endsWith(" " + upperHex)) continue;
+    out2.append("        0x");
+    out2.append(String.format("%08x", i));
+    out2.append(" => Some(\"");
+    out2.append(name);
+    out2.append("\"),\n");
+//    System.out.println(name);
+//    }
     ++count;
   }
+  out2.append("        _ => None,\n");
+  out2.append("    }\n");
+  out2.append("}\n\n");
+  final String content2 = out2.toString();
+  Files.writeString(Path.of("src/codepoint_names.rs"), content2, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+//  System.out.println(content);
 
   System.out.println("count: " + count);
 

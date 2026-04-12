@@ -87,13 +87,38 @@ const subset=async(input,text,woff2,signal)=>{
   });
 };
 /**
+ * @typedef {Record<string,any>} Codepoint
+ * @property {number} n
+ * @property {string} [name]
+ */
+/**
+ * @typedef {Record<string,any>} Axis
+ * @property {string} tag
+ * @property {number} min
+ * @property {number} max
+ * @property {number} default
+ */
+/**
+ * @typedef {Record<string,any>} Feature
+ * @property {string} tag
+ * @property {string} name
+ */
+/**
+ * @typedef {Record<string,any>} Table
+ * @property {string} name
+ * @property {number} start
+ * @property {number} end
+ * @property {number[]} codepoints
+ * @property {{n:number,name:string}[]} codepoint_names
+ */
+/**
  * @typedef {Record<string,any>} Metadata
  * @property {Uint8Array} input
  * @property {string} family_name
  * @property {number} codepoint_count
- * @property {{tag:string,name:string}[]} features
- * @property {{tag:string,min:number,max:number,default:number}[]} axes
- * @property {{name:string,start:number,end:number,codepoints:number[]}[]} tables
+ * @property {Feature[]} features
+ * @property {Axis[]} axes
+ * @property {Table[]} tables
  */
 /**
  * @param {Uint8Array} input

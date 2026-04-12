@@ -1,5 +1,7 @@
+mod codepoint_names;
 mod unicode_blocks;
 
+use crate::codepoint_names::codepoint_name;
 use crate::unicode_blocks::{block_index, Block};
 use skera::*;
 use std::borrow::Cow;
@@ -360,9 +362,17 @@ pub unsafe extern "C" fn metadata(ptr: usize, len: usize) -> Box<[u8; 8]> {
         "\"tables\":[{}]",
         tables.into_iter().map(|(block_index, codepoints)| {
             let Block { name, start, end } = Block::at(block_index);
-            let codepoints = codepoints.iter().map(|&it| it.to_string()).collect::<Vec<_>>().join(",");
+            let codepoint_names = (start..end).filter_map(|it| {
+                if let Some(name) = codepoint_name(it) {
+                    let name = JsonString(&name);
+                    Some(format!("{{\"n\":{it},\"name\":\"{name}\"}}"))
+                } else {
+                    None
+                }
+            }).collect::<Vec<_>>().join(",");
+            let codepoints = codepoints.iter().map(|&it| format!("{it}")).collect::<Vec<_>>().join(",");
             let name = JsonString(&name);
-            format!("{{\"name\":\"{name}\",\"start\":{start},\"end\":{end},\"codepoints\":[{codepoints}]}}")
+            format!("{{\"name\":\"{name}\",\"start\":{start},\"end\":{end},\"codepoints\":[{codepoints}],\"codepoint_names\":[{codepoint_names}]}}")
         }).collect::<Vec<_>>().join(",")
     ));
 
@@ -372,6 +382,29 @@ pub unsafe extern "C" fn metadata(ptr: usize, len: usize) -> Box<[u8; 8]> {
         .into_boxed_bytes();
     let len = metadata.len();
     let ptr = Box::into_raw(metadata) as *mut u8;
+    output.extend_from_slice(&(ptr as u32).to_le_bytes());
+    output.extend_from_slice(&(len as u32).to_le_bytes());
+    // # Safety
+    // convert to pointer and length for wasm
+    unsafe { Box::from_raw(Box::into_raw(output.into_boxed_slice()) as *mut [u8; 8]) }
+}
+
+/// # Safety
+/// wasm export
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn codepoint_names(start: u32, end: u32) -> Box<[u8; 8]> {
+    let mut names = vec![];
+    for it in start..=end {
+        if let Some(name) = codepoint_name(it) {
+            names.push(format!("{{\"n\":{it},\"name\":\"{name}\"}}"));
+        }
+    }
+    let names = format!("[{}]", names.join(","))
+        .into_boxed_str()
+        .into_boxed_bytes();
+    let mut output = Vec::with_capacity(8);
+    let len = names.len();
+    let ptr = Box::into_raw(names) as *mut u8;
     output.extend_from_slice(&(ptr as u32).to_le_bytes());
     output.extend_from_slice(&(len as u32).to_le_bytes());
     // # Safety
