@@ -1,6 +1,6 @@
-mod unicode;
+mod unicode_blocks;
 
-use crate::unicode::{block_index, Block};
+use crate::unicode_blocks::{block_index, Block};
 use skera::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

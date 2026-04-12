@@ -57,12 +57,32 @@ void main() throws Exception {
   out.append("        Self {\n");
   out.append("            name: BLOCKS[index],\n");
   out.append("            start: BLOCK_STARTS[index],\n");
-  out.append("            end: *BLOCK_STARTS.get(index + 1).unwrap_or(&u32::MAX),\n");
+  out.append("            end: *BLOCK_STARTS.get(index + 1).unwrap_or(&0x10FFFF),\n");
   out.append("        }\n");
   out.append("    }\n");
   out.append("}\n");
 
   final String content = out.toString();
-  Files.writeString(Path.of("src/unicode.rs"), content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+  Files.writeString(Path.of("src/unicode_blocks.rs"), content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
   System.out.println(content);
+
+  int count = 0;
+  for (int i = 0; i < 0x10FFFF; i++) {
+    if (Character.isISOControl(i)) continue;
+    final int category = Character.getType(i);
+    if (category == Character.PRIVATE_USE) continue;
+    if (category == Character.UNASSIGNED) continue;
+    if (category == Character.CONTROL) continue;
+    if (category == Character.SURROGATE) continue;
+    final String name = Character.getName(i);
+    if (name == null) continue;
+    if (name.isEmpty()) continue;
+    if (i < 100000) {
+      System.out.println(name);
+    }
+    ++count;
+  }
+
+  System.out.println("count: " + count);
+
 }
